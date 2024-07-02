@@ -1,0 +1,7 @@
+[debian]
+localhost ansible_connection=local
+debian_ansible ansible_host=192.168.195.152 ansible_user=ansible ansible_password=ansible
+debian_sudo ansible_host=192.168.195.152 ansible_user=debian ansible_password=debian
+
+[debian:vars]
+ansible_become_pass=debian

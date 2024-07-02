@@ -1,0 +1,194 @@
+- name: Create user ansible 
+  hosts: debian_sudo
+  ignore_unreachable: true  # Игнорирование недоступности хоста (переход к подключению от пользователя ansible)
+  gather_facts: false # Игнорирование проверку Gathering Facts, чтобы избежать проверки sudoers
+  become: yes
+  tasks:
+    - name: add user
+      user:
+        name: ansible
+        password: "{{ 'ansible' | password_hash('sha512') }}"
+        home: "/home/ansible"
+        shell: "/bin/bash"
+      ignore_errors: true  # Игнорирование неудачного создания пользователя, так как он уже может существовать
+
+    - name: Configure sudoers
+      lineinfile:
+        path: /etc/sudoers
+        state: present
+        line: 'ansible ALL=(ALL:ALL) NOPASSWD:ALL'
+        validate: 'visudo -cf %s'
+      ignore_errors: true  # Игнорирование неудачной записи пользователя в sudoers, так как он уже может быть прописан
+
+
+- name: apt update && apt upgrade && set timezone # Обновление зависимостей, пакетов, часового пояса
+  hosts: debian_ansible
+  become: yes
+  tasks:
+    - name: apt update
+      apt:
+        update_cache: yes
+    
+    - name: apt upgrade
+      apt:
+        upgrade: dist
+        autoremove: yes
+        autoclean: yes
+
+    - name: Set timezone to MSK
+      ansible.builtin.timezone:
+        name: Europe/Moscow
+
+
+- name: Generate SSH keys && install postgresql collection # Генерация ключа и сохранение его в директорию
+  hosts: localhost
+  tasks:
+    - name: Generate SSH key
+      community.crypto.openssh_keypair:
+        path: "{{ ansible_env.HOME }}/.ssh/id_ed25519"
+        type: ed25519
+        owner: "{{ ansible_env.USER }}"
+        group: "{{ ansible_env.USER }}"
+      register: key_result
+
+    - name: Debug current user
+      ansible.builtin.debug:
+        msg: "The playbook was run by {{ ansible_env.USER }}. The secret key is stored in {{ ansible_env.HOME }}/.ssh/id_ed25519."
+
+    - name: Set public SSH key variable # Запись публичного ключа в переменную
+      ansible.builtin.set_fact:
+        public_ssh_key: "{{ key_result.public_key }}"
+
+    - name: Install community.postgresql
+      ansible.builtin.command: ansible-galaxy collection install community.postgresql
+
+
+- name: Copy generated SSH public key to debian_ansible # Создание (проверка) директории .ssh и прописывание открытого ключа
+  hosts: debian_ansible
+  tasks:
+    - name: Ensure ~/.ssh directory exists for ansible user
+      ansible.builtin.file:
+        path: /home/ansible/.ssh
+        state: directory
+        owner: ansible
+        group: ansible
+        mode: '0700'
+
+    - name: Copy SSH public key to debian_ansible
+      ansible.posix.authorized_key:
+        user: ansible
+        state: present
+        key: "{{ hostvars['localhost']['public_ssh_key'] }}"
+
+
+- name: Configure sshd_config # Установление запрета на аутентификацию по паролю
+  hosts: debian_ansible
+  become: yes
+  tasks:
+    - name: Update sshd_config to disable root login and password authentication
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^{{ item.regexp }}'
+        line: '{{ item.line }}'
+        state: present
+      with_items:
+        - { regexp: 'PermitRootLogin', line: 'PermitRootLogin no' }
+        - { regexp: 'PasswordAuthentication', line: 'PasswordAuthentication no' }
+
+    - name: Reload SSH to apply changes
+      ansible.builtin.command: systemctl reload ssh
+
+- name: enable UFW    # Установка и включение UFW, открытие портов для SSH и postgresql
+  hosts: debian_ansible
+  become: yes
+  tasks:
+    - name: Install UFW
+      ansible.builtin.command: sudo apt install ufw -y
+
+    - name: Allow SSH and PostgreSQL ports
+      ansible.builtin.command: ufw allow {{ item }}
+      loop:
+        - 22/tcp
+        - 5432/tcp
+
+    - name: Start UFW
+      ansible.builtin.command: systemctl start ufw
+
+    - name: Enable UFW
+      ansible.builtin.command: systemctl enable ufw
+
+- name: configure sysctl # Конфигурация sysctl, повышает сетевую безопасность
+  hosts: debian_ansible
+  become: yes
+  tasks:
+    - name: set sysctl
+      ansible.builtin.sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        state: present
+        sysctl_file: /etc/sysctl.conf
+      with_items:
+        - { name: 'net.ipv4.conf.all.accept_source_route', value: '0' }
+        - { name: 'net.ipv4.conf.default.accept_source_route', value: '0' }
+        - { name: 'net.ipv4.conf.all.accept_redirects', value: '0' }
+        - { name: 'net.ipv4.conf.default.accept_redirects', value: '0' }
+        - { name: 'net.ipv4.icmp_echo_ignore_broadcasts', value: '1' }
+        - { name: 'net.ipv4.icmp_ignore_bogus_error_responses', value: '1' }
+
+    - name: Reload sysctl settings
+      ansible.builtin.command: sysctl --system
+
+- name: setup postgresql # Установка Postgresql 16
+  hosts: debian_ansible
+  become: yes
+  tasks:
+    - name: Add PostgreSQL apt repository key
+      apt_key:
+        url: https://www.postgresql.org/media/keys/ACCC4CF8.asc
+
+    - name: Add PostgreSQL apt repository
+      apt_repository:
+        repo: "deb http://apt.postgresql.org/pub/repos/apt/ {{ ansible_distribution_release }}-pgdg main"
+
+    - name: Install PostgreSQL 16
+      ansible.builtin.apt:
+        name:
+          - postgresql-16
+        state: present
+        update_cache: yes
+
+- name: Config postgresql.conf  # Разрешение для подключений не только по localhost
+  hosts: debian_ansible
+  become: yes
+  tasks:
+    - name: config postgresql.conf
+      ansible.builtin.lineinfile:
+        path: /etc/postgresql/16/main/postgresql.conf  # Путь к конфигурационному файлу PostgreSQL
+        regexp: '^#?{{ item.regexp }}'               # Регулярное выражение для поиска строки (с учетом возможного наличия комментария перед настройкой)
+        line: '{{ item.line }}'                      # Новая строка для замены
+      with_items:
+        - { regexp: "listen_addresses =", line: "listen_addresses = '*'" }
+
+- name: Set up PostgreSQL user and database # Редактирование пользователя postgres, создание и вывод тестовых данных
+  hosts: debian_ansible
+  become: yes
+  tasks:
+    - name: Set new password for PostgreSQL user
+      ansible.builtin.raw: sudo -u postgres psql -c "ALTER USER postgres WITH PASSWORD 'Qq12345'"
+
+    - name: Create database
+      ansible.builtin.shell: sudo -u postgres psql -c "CREATE DATABASE int_34;"
+
+    - name: Create table emails
+      ansible.builtin.shell: sudo -u postgres psql -d int_34 -c "CREATE TABLE emails (id SERIAL PRIMARY KEY, username VARCHAR(50) NOT NULL, email VARCHAR(50) NOT NULL)"
+
+    - name: Insert data into emails table
+      ansible.builtin.shell: sudo -u postgres psql -d int_34 -c "INSERT INTO emails (username, email) VALUES ('test', 'test@test.com'), ('Rayan Gosling', 'gosling@gov.ru')"
+
+    - name: Query data from emails table
+      ansible.builtin.shell: sudo -u postgres psql -d int_34 -c "SELECT * FROM emails;"
+      register: query_result
+
+    - name: Display the result of the query
+      ansible.builtin.debug:
+        msg: "{{ query_result.stdout_lines }}"
