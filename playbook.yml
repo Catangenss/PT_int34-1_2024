@@ -98,6 +98,7 @@
     - name: Reload SSH to apply changes
       ansible.builtin.command: systemctl reload ssh
 
+
 - name: enable UFW    # Установка и включение UFW, открытие портов для SSH и postgresql
   hosts: debian_ansible
   become: yes
@@ -116,6 +117,7 @@
 
     - name: Enable UFW
       ansible.builtin.command: systemctl enable ufw
+
 
 - name: configure sysctl # Конфигурация sysctl, повышает сетевую безопасность
   hosts: debian_ansible
@@ -138,6 +140,7 @@
     - name: Reload sysctl settings
       ansible.builtin.command: sysctl --system
 
+
 - name: setup postgresql # Установка Postgresql 16
   hosts: debian_ansible
   become: yes
@@ -157,6 +160,7 @@
         state: present
         update_cache: yes
 
+
 - name: Config postgresql.conf  # Разрешение для подключений не только по localhost
   hosts: debian_ansible
   become: yes
@@ -168,6 +172,18 @@
         line: '{{ item.line }}'                      # Новая строка для замены
       with_items:
         - { regexp: "listen_addresses =", line: "listen_addresses = '*'" }
+
+    - name: config pg_hba.conf
+      lineinfile:
+        path: /etc/postgresql/16/main/pg_hba.conf
+        line: "host all postgres 0.0.0.0/0 scram-sha-256"
+
+    - name: Restart PostgreSQL
+      systemd:
+        state: restarted
+        daemon_reload: yes
+        name: postgresql
+
 
 - name: Set up PostgreSQL user and database # Редактирование пользователя postgres, создание и вывод тестовых данных
   hosts: debian_ansible
