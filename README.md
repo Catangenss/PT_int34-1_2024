@@ -1,9 +1,9 @@
 Тестовое задание Int-4 №1 для стажировки PT-START-2024.2
 
-Сценарий Ansible выполнялся на debian-11.11.0-amd64-standard
+Сценарий Ansible выполнялся на debian-11.11.0-amd64
 
-Запустить в автоматическом режиме:
-chmod 755 autostart.sh
+Запустить в автоматическом режиме:  
+chmod 755 autostart.sh  
 ./autostart.sh
 
 Запуск в ручном режиме требует установки python3 python3-pip sshpass ansible passlib

@@ -14,7 +14,7 @@ sudo update-alternatives --install /usr/bin/python python /usr/bin/python3 2
 
 # Установка Ansible и passlib через pip
 echo "Installing Ansible and passlib..."
-pip3 install ansible passlib
+sudo pip3 install ansible passlib
 
 # Запрос данных у пользователя для инвентарного файла
 echo "Enter ansible client data to write to inventory"
